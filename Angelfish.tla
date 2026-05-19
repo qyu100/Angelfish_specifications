@@ -152,12 +152,6 @@ l1:     while (TRUE)
                     \* finally, increment the round counter:
                     round := round+1
             }
-            or {
-                \* if we have the leader, we can also vote without having heard from a quorum:
-                when (Leader(round+1) # self); \* leaders cannot vote
-                when (Leader(round) \in vs);
-                Vote({Leader(round)})
-            }
             or 
                 \* timeout (this means we cannot support the leader of this round in the next round)
                 timeouts := timeouts \cup {<<self, round>>}
@@ -166,122 +160,6 @@ l1:     while (TRUE)
     }
 }
 *)
-\* BEGIN TRANSLATION (chksum(pcal) = "9fea5d2d" /\ chksum(tla) = "f4ef0e95")
-VARIABLES pc, vs, es, votes, timeouts
-
-(* define statement *)
-dag == <<vs, es>>
-
-ValidPreviousLeader(l, rnd) ==
-    /\  IsLeader(l)
-    /\  \A r \in (Round(l)+1)..(rnd-1) :
-            IsQuorumMsgs({to \in timeouts : Round(to) = r})
-
-IsValid(d) == \A v \in Vertices(d) : v # <<>> =>
-    /\  Node(v) \in N /\ Round(v) \in Nat \ {0}
-    /\  IF \neg IsLeader(v)
-        THEN \A v2 \in Children(d, v) : Round(v2) = Round(v) - 1
-        ELSE \E l \in Children(d, v) :
-            /\  IsLeader(l) /\ Round(l) < Round(v)
-            /\  ValidPreviousLeader(l, Round(v))
-            /\  \A v2 \in Children(d, v) :
-                    v2 # l => Round(v2) = Round(v) - 1
-
-VARIABLES round, log
-
-vars == << pc, vs, es, votes, timeouts, round, log >>
-
-ProcSet == (N)
-
-Init == (* Global variables *)
-        /\ vs = {Genesis}
-        /\ es = {}
-        /\ votes = {}
-        /\ timeouts = {}
-        (* Process correctNode *)
-        /\ round = [self \in N |-> 0]
-        /\ log = [self \in N |-> <<>>]
-        /\ pc = [self \in ProcSet |-> "l0"]
-
-l0(self) == /\ pc[self] = "l0"
-            /\ round' = [round EXCEPT ![self] = 1]
-            /\ \/ /\ vs' = (vs \cup {<<self, 1>>})
-                  /\ es' = (es \cup {<<<<self, 1>>, Genesis>>})
-                  /\ votes' = votes
-               \/ /\ votes' = (votes \cup {<<self, 1, <<>>>>})
-                  /\ UNCHANGED <<vs, es>>
-            /\ pc' = [pc EXCEPT ![self] = "l1"]
-            /\ UNCHANGED << timeouts, log >>
-
-l1(self) == /\ pc[self] = "l1"
-            /\ \/ /\ \E deliveredVertices \in SUBSET {v \in vs \ {<<>>} : Round(v) = round[self]}:
-                       \E deliveredVotes \in SUBSET {vt \in votes \ {<<>>} : Round(vt) = round[self]}:
-                         \E deliveredTimeouts \in SUBSET {to \in timeouts \ {<<>>} : Round(to) = round[self]}:
-                           /\ IsQuorumMsgs(deliveredVertices \cup deliveredVotes \cup deliveredTimeouts)
-                           /\ LeaderVertex(round[self]) \in deliveredVertices \/ IsQuorumMsgs(deliveredTimeouts)
-                           /\ \/ /\ (Leader(round[self]+1) # self)
-                                 /\ IF LeaderVertex(round[self]) \in deliveredVertices /\ <<self, round[self]>> \notin timeouts
-                                       THEN /\ votes' = (votes \cup {<<self, round[self]+1, LeaderVertex(round[self])>>})
-                                       ELSE /\ votes' = (votes \cup {<<self, round[self]+1, <<>>>>})
-                                 /\ UNCHANGED <<vs, es>>
-                              \/ /\ IF LeaderVertex(round[self]) \in deliveredVertices /\ <<self, round[self]>> \notin timeouts
-                                       THEN /\ LET newV == <<self, round[self]+1>> IN
-                                                 /\ vs' = (vs \cup {newV})
-                                                 /\ es' = (es \cup {<<newV, pv>> : pv \in deliveredVertices})
-                                       ELSE /\ IF Leader(round[self]+1) # self
-                                                  THEN /\ LET newV == <<self, round[self]+1>> IN
-                                                            /\ vs' = (vs \cup {newV})
-                                                            /\ es' = (es \cup {<<newV, pv>> : pv \in deliveredVertices \ {LeaderVertex(round[self])}})
-                                                  ELSE /\ \E prevLeader \in                  {v \in vs :
-                                                                            Round(v) < round[self] /\ v = LeaderVertex(Round(v))}:
-                                                            LET newV == <<self, round[self]+1>> IN
-                                                              /\ ValidPreviousLeader(prevLeader, round[self]+1)
-                                                              /\ vs' = (vs \cup {newV})
-                                                              /\ es' = es
-                                                                         \cup {<<newV, pv>> : pv \in deliveredVertices \ {LeaderVertex(round[self])}}
-                                                                         \cup {<<newV, prevLeader>>}
-                                 /\ votes' = votes
-                           /\ IF round[self] > 1
-                                 THEN /\ LET l == LeaderVertex(round[self]-1) IN
-                                           LET support == {v \in deliveredVertices : <<v, l>> \in es'} \cup {vt \in deliveredVotes : vt[3] = l} IN
-                                             IF IsQuorumMsgs(support)
-                                                THEN /\ log' = [log EXCEPT ![self] = Linearize(SubDag(dag, {l}), l)]
-                                                ELSE /\ TRUE
-                                                     /\ log' = log
-                                 ELSE /\ TRUE
-                                      /\ log' = log
-                           /\ round' = [round EXCEPT ![self] = round[self]+1]
-                  /\ UNCHANGED timeouts
-               \/ /\ (Leader(round[self]+1) # self)
-                  /\ (Leader(round[self]) \in vs)
-                  /\ IF LeaderVertex(round[self]) \in ({Leader(round[self])}) /\ <<self, round[self]>> \notin timeouts
-                        THEN /\ votes' = (votes \cup {<<self, round[self]+1, LeaderVertex(round[self])>>})
-                        ELSE /\ votes' = (votes \cup {<<self, round[self]+1, <<>>>>})
-                  /\ UNCHANGED <<vs, es, timeouts, round, log>>
-               \/ /\ timeouts' = (timeouts \cup {<<self, round[self]>>})
-                  /\ UNCHANGED <<vs, es, votes, round, log>>
-               \/ /\ \E M \in SUBSET ((vs \cup votes \cup timeouts) \ {Genesis}) \ {{}}:
-                       LET r == Min({Round(m) : m \in M}) IN
-                         LET B == {Node(m) : m \in M} IN
-                           /\ r > round[self]+1 /\ IsBlocking(B)
-                           /\ round' = [round EXCEPT ![self] = r]
-                  /\ UNCHANGED <<vs, es, votes, timeouts, log>>
-            /\ pc' = [pc EXCEPT ![self] = "l1"]
-
-correctNode(self) == l0(self) \/ l1(self)
-
-(* Allow infinite stuttering to prevent deadlock on termination. *)
-Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
-               /\ UNCHANGED vars
-
-Next == (\E self \in N: correctNode(self))
-           \/ Terminating
-
-Spec == Init /\ [][Next]_vars
-
-Termination == <>(\A self \in ProcSet: pc[self] = "Done")
-
-\* END TRANSLATION 
 
 (**************************************************************************************)
 (* Correctness properties:                                                            *)
